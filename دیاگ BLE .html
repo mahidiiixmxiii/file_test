@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 BLE Chat</title>
+    <!-- استفاده از Tailwind CSS برای طراحی زیبا و واکنش‌گرا -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;700&display=swap');
+        body {
+            font-family: 'Vazirmatn', sans-serif;
+            direction: rtl; /* برای نمایش صحیح متن فارسی */
+        }
+        .chat-container {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .message-box {
+            padding: 8px;
+            border-radius: 12px;
+            margin-bottom: 8px;
+            max-width: 80%;
+        }
+        .sent-message {
+            background-color: #d1e7dd; /* رنگ سبز روشن */
+            align-self: flex-end;
+        }
+        .received-message {
+            background-color: #f8d7da; /* رنگ قرمز روشن */
+            align-self: flex-start;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4 flex items-center justify-center min-h-screen">
+    <div class="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md space-y-6">
+        <h1 class="text-3xl font-bold text-center text-gray-800">چت ESP32 BLE</h1>
+        <div class="space-y-4">
+            <!-- وضعیت اتصال -->
+            <div id="status" class="text-center text-gray-600 font-semibold">
+                وضعیت: آماده اتصال
+            </div>
+
+            <!-- دکمه اتصال -->
+            <button id="connectButton" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-xl shadow-lg transition-colors duration-200">
+                اتصال به ESP32
+            </button>
+        </div>
+
+        <!-- پنجره چت -->
+        <div class="flex flex-col space-y-2 chat-container p-4 bg-gray-50 rounded-lg shadow-inner border border-gray-200">
+            <!-- پیام‌ها به صورت پویا در اینجا اضافه می‌شوند -->
+            <div id="chatLog" class="flex flex-col space-y-2"></div>
+        </div>
+
+        <!-- فیلد ورودی و دکمه ارسال -->
+        <div class="flex items-center space-x-2 rtl:space-x-reverse">
+            <input 
+                type="text" 
+                id="messageInput" 
+                placeholder="پیام خود را تایپ کنید..." 
+                class="flex-grow p-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                disabled
+            >
+            <button 
+                id="sendButton" 
+                class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled
+            >
+                ارسال
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // UUIDهای سرویس و مشخصه (Characteristic)
+        // این UUIDها باید با کد C شما مطابقت داشته باشند
+        const serviceUUID = '000000ff-0000-1000-8000-00805f9b34fb';
+        const characteristicUUID = '0000ff01-0000-1000-8000-00805f9b34fb';
+
+        // ارجاع به عناصر HTML
+        const connectButton = document.getElementById('connectButton');
+        const sendButton = document.getElementById('sendButton');
+        const statusElement = document.getElementById('status');
+        const messageInput = document.getElementById('messageInput');
+        const chatLog = document.getElementById('chatLog');
+
+        let bleDevice;
+        let bleCharacteristic;
+
+        // تابع برای نمایش پیام‌ها در پنجره چت
+        function logMessage(message, isSent = false) {
+            const messageElement = document.createElement('div');
+            messageElement.textContent = message;
+            messageElement.className = `message-box ${isSent ? 'sent-message self-end' : 'received-message self-start'}`;
+            chatLog.appendChild(messageElement);
+            chatLog.scrollTop = chatLog.scrollHeight; // اسکرول به پایین
+        }
+
+        // تابع برای به‌روزرسانی وضعیت برنامه
+        function updateStatus(message, colorClass = 'text-gray-600') {
+            statusElement.textContent = `وضعیت: ${message}`;
+            statusElement.className = `text-center font-semibold ${colorClass}`;
+        }
+
+        // تابع اصلی برای اتصال به دستگاه BLE
+        async function connectToDevice() {
+            try {
+                updateStatus('در حال جستجوی دستگاه...');
+                
+                // تغییر مهم: استفاده از acceptAllDevices و optionalServices
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: [serviceUUID]
+                });
+
+                updateStatus('در حال اتصال...');
+
+                // مدیریت رویداد قطع اتصال
+                bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+                // اتصال به سرور GATT
+                const server = await bleDevice.gatt.connect();
+
+                updateStatus('در حال دریافت سرویس GATT...');
+                const service = await server.getPrimaryService(serviceUUID);
+
+                updateStatus('در حال دریافت مشخصه (Characteristic)...');
+                bleCharacteristic = await service.getCharacteristic(characteristicUUID);
+
+                // افزودن listener برای دریافت داده‌ها از دستگاه
+                bleCharacteristic.addEventListener('characteristicvaluechanged', handleCharacteristicValueChanged);
+                await bleCharacteristic.startNotifications();
+
+                // فعال کردن رابط کاربری
+                updateStatus('متصل شد!', 'text-green-600');
+                connectButton.disabled = true;
+                messageInput.disabled = false;
+                sendButton.disabled = false;
+
+                logMessage('اتصال موفقیت‌آمیز بود.');
+
+            } catch (error) {
+                console.error('An error occurred: ' + error);
+                if (error.name === 'NotFoundError') {
+                    updateStatus('خطا در اتصال: سرویس یا مشخصه مورد نظر پیدا نشد.', 'text-red-600');
+                } else if (error.name === 'NotSupportedError') {
+                    updateStatus('خطا در اتصال: مرورگر یا سیستم شما از این قابلیت پشتیبانی نمی‌کند.', 'text-red-600');
+                } else {
+                    updateStatus(`خطا در اتصال: ${error.name}`, 'text-red-600');
+                }
+            }
+        }
+
+        // تابع مدیریت داده‌های دریافتی از دستگاه
+        function handleCharacteristicValueChanged(event) {
+            const value = event.target.value;
+            const receivedString = new TextDecoder().decode(value);
+            logMessage(`(ESP32) -> ${receivedString}`);
+        }
+
+        // تابع مدیریت قطع اتصال
+        function onDisconnected() {
+            updateStatus('اتصال قطع شد!', 'text-red-600');
+            connectButton.disabled = false;
+            messageInput.disabled = true;
+            sendButton.disabled = true;
+            bleCharacteristic = null; // پاک کردن مرجع
+            logMessage('اتصال قطع شد، برای اتصال مجدد روی دکمه کلیک کنید.');
+        }
+
+        // تابع برای ارسال پیام به دستگاه
+        async function sendMessage() {
+            const message = messageInput.value;
+            if (!message || !bleCharacteristic) {
+                return;
+            }
+
+            try {
+                // تبدیل پیام به آرایه بایتی
+                const encoder = new TextEncoder();
+                const data = encoder.encode(message);
+
+                await bleCharacteristic.writeValue(data);
+                logMessage(`(من) -> ${message}`, true); // نمایش پیام ارسالی
+                messageInput.value = ''; // پاک کردن فیلد ورودی
+
+            } catch (error) {
+                console.error('Error sending message:', error);
+                logMessage(`خطا در ارسال پیام: ${error.message}`, false);
+            }
+        }
+
+        // اضافه کردن event listeners به دکمه‌ها
+        connectButton.addEventListener('click', connectToDevice);
+        sendButton.addEventListener('click', sendMessage);
+    </script>
+</body>
+</html>
